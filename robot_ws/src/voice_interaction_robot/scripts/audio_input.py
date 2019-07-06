@@ -33,6 +33,9 @@ import os
 import time
 import threading
 
+import pyaudio
+import wave
+
 WAV_HEADER_LENGTH = 24
 DEFAULT_ASSETS_DIR = rospkg.RosPack().get_path('voice_interaction_robot') + "/assets"
 DEFAULT_ASSETS_EXT = ".wav"
@@ -76,6 +79,14 @@ class AudioInput():
         if command.startswith("/ext"):
             self.set_default_extension(command)
             return
+        if command.startswith("v"):
+            self.record_to_file(filename='tmp.wav')
+            time.sleep(0.1)
+            full_path = self.current_directory + '/' + 'tmp' + self.default_extension
+            audio = self.load_wav_file(full_path)
+            if audio is not None:
+                self.send_audio(audio)
+            return
         if self.command_contains_wake_word(command):
             wake_publisher.publish("wake")
             time.sleep(0.1)
@@ -115,6 +126,31 @@ class AudioInput():
         audio_data = data.astype(np.uint8).tostring()
         audio_output_publisher.publish(audio_data)
 
+    def record_to_file(self, filename = 'tmp.wav', FORMAT = pyaudio.paInt16, CHANNELS = 1,
+                        RATE = 16000, CHUNK = 1024, RECORD_SECONDS=4):
+        audio = pyaudio.PyAudio()
+
+        # start Recording
+        stream = audio.open(format=FORMAT, channels=CHANNELS,
+                        rate=RATE, input=True,
+                        frames_per_buffer=CHUNK)
+        frames = []
+
+        print("Start Recording!")
+        for i in range(0, int(RATE / CHUNK * RECORD_SECONDS)):
+            data = stream.read(CHUNK, exception_on_overflow=True)
+            frames.append(data)
+
+        # stop Recording
+        stream.stop_stream()
+        stream.close()
+
+        waveFile = wave.open(self.current_directory + "/" + filename, 'wb')
+        waveFile.setnchannels(CHANNELS)
+        waveFile.setsampwidth(audio.get_sample_size(FORMAT))
+        waveFile.setframerate(RATE)
+        waveFile.writeframes(b''.join(frames))
+        waveFile.close()
 
 def main():
     usage = """
@@ -127,6 +163,7 @@ stop                        - Stop all movement
 Helpers
 /dir <directory> set the default directory to read audio files from (default: {DEFAULT_ASSETS_DIR})
 /ext <extension> set the default extension that all audio files will have (default: {DEFAULT_ASSETS_EXT})
+v to use microphone for voice input
 """.format(DEFAULT_ASSETS_DIR=DEFAULT_ASSETS_DIR, DEFAULT_ASSETS_EXT=DEFAULT_ASSETS_EXT)
     print(usage)
     rospy.init_node("audio_input_script", disable_signals=True)
