@@ -22,9 +22,40 @@ This node processes fulfilled commands from lex and turns them into robot comman
 
 import rospy
 from voice_interaction_robot_msgs.msg import FulfilledVoiceCommand
-from geometry_msgs.msg import Twist
+#from geometry_msgs.msg import Twist
+from std_msgs.msg import Float64, Float64MultiArray, MultiArrayLayout, MultiArrayDimension
+from sensor_msgs.msg import JointState
+from industrial_msgs.srv import StopMotion, StopMotionRequest, StopMotionResponse
 
-cmd_vel_publisher = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
+#cmd_vel_publisher = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
+jnt_pos_publisher = rospy.Publisher('/minibot/joint_position_controller/command', Float64MultiArray, queue_size=5)
+
+import thread
+DegreeToRadian = 0.017453292519943
+lock = thread.allocate_lock()
+jnt_vals = [0. for i in xrange(6)]  # radian
+def jnt_state_callback(msg):
+    global jnt_vals
+    # get updated joint values
+    #while lock:
+    #rospy.loginfo(msg)
+    for i in xrange(len(jnt_vals)):
+        jnt_vals[i] = msg.position[i]
+
+jnt_state_subscriber = rospy.Subscriber('/joint_states', JointState, jnt_state_callback)
+
+def stop_motion_client():
+    rospy.wait_for_service('stop_motion')
+    try:
+        stopProxy = rospy.ServiceProxy('stop_motion', StopMotion)
+        req = StopMotionRequest()
+        res = StopMotionResponse()
+        res = stopProxy(req)
+        rospy.loginfo("return code: " + str(res.code.val))
+        return res
+    except rospy.ServiceException, e:
+        print "Service call failed: %s" % e
+
 
 class VoiceCommandTranslator:
     slots = []
@@ -32,6 +63,15 @@ class VoiceCommandTranslator:
     def __init__(self):
         rospy.init_node("voice_command_translator")
         rospy.Subscriber('/voice_interaction_node/fulfilled_command', FulfilledVoiceCommand, self.handle_voice_command)
+        # initialize message
+        self.arr_layout = MultiArrayLayout()
+        self.arr_layout.dim.append(MultiArrayDimension())
+        self.arr_layout.dim[0].size = 6
+        self.arr_layout.dim[0].label = "arm_values"
+        self.arm_msg = Float64MultiArray()
+        self.arm_msg.layout = self.arr_layout
+        self.arm_msg.data = [0. for i in xrange(6)]  # radian
+
 
     def run(self):
         rospy.spin()
@@ -50,7 +90,7 @@ class VoiceCommandTranslator:
             rospy.logwarn("Could not find handler for lex intent " + command.intent_name)
             return
         response_handlers[command.intent_name]()
-    
+
     def convert_slot_array_to_map(self, slot_array):
         return {slot.key: slot.value for slot in slot_array}
 
@@ -58,35 +98,59 @@ class VoiceCommandTranslator:
         pass
 
     def stop_handler(self):
-        stop_command = Twist()
-        self.publish_command(stop_command)
-        
+        result = stop_motion_client()
+        if result:
+            rospy.loginfo("Halt command send and result: " + str(result.code.val))
+
+        #stop_command = Twist()
+        #self.publish_command(stop_command)
+
     def move_handler(self):
         move_command = self.convert_response_to_move_command()
         self.publish_command(move_command)
-        
+
     def convert_response_to_move_command(self):
-        twist = Twist()
-        twist.linear.x = float(self.slots['move_rate'])
+        with lock:
+            for i in xrange(len(jnt_vals)):
+                self.arm_msg.data[i] = jnt_vals[i]
+        j2_deg = float(self.slots['move_rate']) * -1
         if self.slots['move_direction'].startswith("back"):
-            twist.linear.x *= -1
-        return twist
-        
+            j2_deg *= -1
+        self.arm_msg.data[1] += (j2_deg * DegreeToRadian)
+        return self.arm_msg
+        #twist = Twist()
+        #twist.linear.x = float(self.slots['move_rate'])
+        #if self.slots['move_direction'].startswith("back"):
+        #    twist.linear.x *= -1
+        #return twist
+
     def turn_handler(self):
         turn_command = self.convert_response_to_turn_command()
         self.publish_command(turn_command)
-        
+
     def convert_response_to_turn_command(self):
-        twist = Twist()
-        twist.angular.z = float(self.slots['turn_rate'])
+        with lock:
+            for i in xrange(len(jnt_vals)):
+                self.arm_msg.data[i] = jnt_vals[i]
+        j1_deg = float(self.slots['turn_rate'])
         if self.slots['turn_direction'].startswith("clock"):
-            twist.angular.z *= -1
-        return twist
-        
-    def publish_command(self, cmd_vel_command):
-        rospy.logdebug("publishing the following to /cmd_vel:")
-        rospy.logdebug(cmd_vel_command)
-        cmd_vel_publisher.publish(cmd_vel_command)
+            j1_deg *= -1
+        self.arm_msg.data[0] += (j1_deg * DegreeToRadian)
+        return self.arm_msg
+        #twist = Twist()
+        #twist.angular.z = float(self.slots['turn_rate'])
+        #if self.slots['turn_direction'].startswith("clock"):
+        #    twist.angular.z *= -1
+        #return twist
+
+    #def publish_command(self, cmd_vel_command):
+    def publish_command(self, jnt_pos_command):
+        rospy.logdebug("publishing the following to /minibot/joint_position_controller/command:")
+        rospy.logdebug(jnt_pos_command)
+        jnt_pos_publisher.publish(jnt_pos_command)
+        #rospy.logdebug("publishing the following to /cmd_vel:")
+        #rospy.logdebug(cmd_vel_command)
+        #cmd_vel_publisher.publish(cmd_vel_command)
 
 
 def main():

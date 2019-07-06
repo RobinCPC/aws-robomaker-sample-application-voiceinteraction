@@ -15,6 +15,7 @@ find_package(catkin REQUIRED COMPONENTS
   nav_msgs
   audio_common_msgs
   lex_common_msgs
+  industrial_msgs
 )
 
 ################################################################################
@@ -44,6 +45,7 @@ catkin_package(
   message_runtime
   lex_common_msgs
   voice_interaction_robot_msgs
+  industrial_msgs
 )
 
 ################################################################################
